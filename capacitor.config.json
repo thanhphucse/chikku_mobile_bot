@@ -1,0 +1,13 @@
+{
+  "appId": "com.hotelsaigon.chikku",
+  "appName": "Chikku",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SpeechRecognition": {
+      "language": "en-US"
+    }
+  }
+}

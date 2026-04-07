@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Chikku – Hotel Saigon</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ═══════════════════════════════ SPLASH ═══════════════════════════════ -->
+  <div id="page-splash" class="page active">
+    <div class="center-box">
+      <div class="logo-text">CHIKKU</div>
+      <div class="logo-sub">Hotel Saigon Chatbot</div>
+      <div class="dots">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════ LOADING ══════════════════════════════ -->
+  <div id="page-loading" class="page">
+    <div class="center-box">
+      <div class="logo-text">CHIKKU</div>
+      <div class="logo-sub">Hotel Saigon Chatbot</div>
+      <div class="progress-track">
+        <div class="progress-fill"></div>
+      </div>
+      <p id="loading-status">Initializing…</p>
+      <p id="loading-error" class="error-text hidden"></p>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════ VOICE ════════════════════════════════ -->
+  <div id="page-voice" class="page">
+    <div class="voice-layout">
+
+      <!-- Header -->
+      <header class="voice-header">
+        <span class="voice-title">Chikku &mdash; Hotel Saigon</span>
+        <button id="btn-new-chat" class="header-btn" title="New conversation">&#8635; New</button>
+        <button id="btn-mute" class="header-btn mute" title="Mute / Unmute voice">&#128266; Voice</button>
+      </header>
+
+      <!-- Chat display -->
+      <div id="chat-display" class="chat-display">
+        <div class="welcome-msg">
+          <span class="bot-bubble">👋 Hello! I'm Chikku, your Hotel Saigon assistant.<br>Press the microphone button and speak your question.</span>
+        </div>
+      </div>
+
+      <!-- Voice controls -->
+      <footer class="voice-footer">
+        <div id="live-query" class="live-query hidden"></div>
+        <div class="controls-row">
+          <div id="status-label" class="status-label">Ready — press mic to speak</div>
+          <button id="btn-mic" class="mic-btn" title="Tap to speak">&#127908;</button>
+        </div>
+        <!-- Text fallback (shown automatically when STT unavailable) -->
+        <div id="text-input-row" class="text-input-row hidden">
+          <input id="text-input" class="text-input" type="text" placeholder="Type your message…" />
+          <button id="btn-send" class="send-btn">&#9654;</button>
+        </div>
+      </footer>
+
+    </div>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/api-client.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
