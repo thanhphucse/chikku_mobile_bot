@@ -48,25 +48,79 @@ function saveSession(conversationId, messageCount) {
   }));
 }
 
-// ─── Text-to-Speech (Web Speech Synthesis) ────────────────────────────────────
+// ─── Text-to-Speech (Capacitor Native + Web Fallback) ─────────────────────────
 
-function speak(text) {
-  if (!state.ttsEnabled || !window.speechSynthesis) {
-    console.log('[TTS] skipped — disabled or unavailable');
-    return;
-  }
-  console.log('[TTS] speaking:', text.slice(0, 60));
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  const cfg = window.CHIKKU_CONFIG;
-  utterance.lang  = cfg.ttsLang  || 'en-US';
-  utterance.rate  = cfg.ttsRate  || 1.0;
-  utterance.pitch = cfg.ttsPitch || 1.0;
-  window.speechSynthesis.speak(utterance);
+const CapacitorTTS = window.Capacitor?.Plugins?.TextToSpeech || null;
+
+function cleanTextForSpeech(text) {
+  if (!text) return '';
+  return text
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/`/g, '')
+    .replace(/#/g, '')
+    .trim();
 }
 
-function stopSpeaking() {
-  if (window.speechSynthesis) window.speechSynthesis.cancel();
+async function speak(text) {
+  if (!state.ttsEnabled) {
+    console.log('[TTS] skipped — disabled');
+    return;
+  }
+  
+  const cleanText = cleanTextForSpeech(text);
+  console.log('[TTS] speaking:', cleanText.slice(0, 60));
+  
+  const cfg = window.CHIKKU_CONFIG || {};
+  const lang = cfg.ttsLang || 'en-US';
+  const rate = cfg.ttsRate || 1.0;
+  const pitch = cfg.ttsPitch || 1.0;
+
+  // Priority 1: use the native Capacitor plugin
+  if (CapacitorTTS) {
+    try {
+      // Stop any current speech before starting a new utterance.
+      await CapacitorTTS.stop(); 
+      await CapacitorTTS.speak({
+        text: cleanText,
+        lang: lang,
+        rate: rate,
+        pitch: pitch,
+        category: 'ambient' // Keep audio playable even when the device is in silent/vibrate mode.
+      });
+      console.log('[TTS] Native TTS finished successfully');
+    } catch (e) {
+      console.error('[TTS] Native TTS error:', e);
+    }
+    return;
+  }
+
+  // Priority 2: fall back to the Web Speech API in browser contexts.
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+    
+    // Give the web speech engine a moment to clear its queue.
+    setTimeout(() => {
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      utterance.lang  = lang;
+      utterance.rate  = rate;
+      utterance.pitch = pitch;
+
+      utterance.onstart = () => console.log('[TTS] Web ▶ started');
+      utterance.onend   = () => console.log('[TTS] Web ■ finished');
+      utterance.onerror = (e) => console.error('[TTS] Web ✗ error:', e.error);
+
+      window.speechSynthesis.speak(utterance);
+    }, 50);
+  }
+}
+
+async function stopSpeaking() {
+  if (CapacitorTTS) {
+    try { await CapacitorTTS.stop(); } catch(e){}
+  } else if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
 }
 
 // ─── Speech Recognition ───────────────────────────────────────────────────────
@@ -77,30 +131,63 @@ const WebSTT = window.SpeechRecognition || window.webkitSpeechRecognition || nul
 let recognition = null;
 let finalTranscript = '';
 
+function requestMicWithTimeout(timeoutMs = 3000) {
+  return Promise.race([
+    requestMicPermission(), 
+    new Promise((resolve) => {
+      setTimeout(() => {
+        console.warn('[MIC] Permission request timed out!');
+        resolve(false); // Skip and continue if the permission prompt takes too long.
+      }, timeoutMs);
+    })
+  ]);
+}
 async function requestMicPermission() {
-  // Capacitor plugin handles its own permissions on iOS
+  // Priority 1: native Capacitor plugin for OS-level permissions on iOS/Android.
   if (CapacitorSTT) {
     try {
       const result = await CapacitorSTT.requestPermission();
+      // The plugin typically returns 'granted'.
       return result.permission === 'granted';
-    } catch { return false; }
+    } catch (err) {
+      console.warn('[MIC] Capacitor permission error:', err);
+      // Do not return false immediately; allow the web fallback if the plugin fails.
+    }
   }
-  // For Web Speech API, permission is requested automatically on first use
-  return true;
+
+  // Priority 2: fallback for web/PWA environments.
+  if (navigator.mediaDevices?.getUserMedia) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop()); 
+      console.log('[MIC] getUserMedia permission granted');
+      return true;
+    } catch (err) {
+      console.warn('[MIC] getUserMedia denied:', err.message);
+      return false;
+    }
+  }
+
+  return false;
 }
 
 async function startRecording() {
   console.log('[MIC] startRecording called — isRecording:', state.isRecording, 'isProcessing:', state.isProcessing);
   if (state.isRecording || state.isProcessing) return;
-  stopSpeaking();
+  await stopSpeaking();
 
+  // Priority 1: native speech recognition for the mobile app.
   if (CapacitorSTT) {
-    console.log('[STT] using Capacitor plugin');
+    console.log('[STT] using Capacitor native plugin');
     await _startCapacitorSTT();
-  } else if (WebSTT) {
-    console.log('[STT] using Web Speech API');
+  } 
+  // Priority 2: fall back to the Web API when running in a browser.
+  else if (WebSTT) {
+    console.log('[STT] using Web Speech API (WebView)');
+    finalTranscript = ''; // Reset here so auto-restart does not wipe the transcript.
     _startWebSTT();
-  } else {
+  } 
+  else {
     console.warn('[STT] no STT engine available');
     setStatus('', '⚠ Speech recognition not supported on this device');
     return;
@@ -109,6 +196,9 @@ async function startRecording() {
 
 async function _startCapacitorSTT() {
   try {
+    // Clear any previous transcript before starting a new session.
+    finalTranscript = '';
+
     await CapacitorSTT.start({
       language: 'en-US',
       maxResults: 1,
@@ -116,23 +206,30 @@ async function _startCapacitorSTT() {
       popup: false,
     });
 
+    // Listen for incremental results coming back from the OS.
     CapacitorSTT.addListener('partialResults', (data) => {
-      if (data.matches?.length > 0) showLiveQuery(data.matches[0]);
+      if (data.matches && data.matches.length > 0) {
+        // Keep the latest result so stopRecording() can submit it.
+        finalTranscript = data.matches[0]; 
+        showLiveQuery(finalTranscript);
+      }
     });
 
-    // SpeechRecognition plugin fires 'listeningState' or resolves on stop
     setRecordingState(true);
   } catch (err) {
+    console.error('[STT] Native start error:', err);
     setStatus('', `⚠ Microphone error: ${err.message}`);
   }
 }
 
 function _startWebSTT() {
-  finalTranscript = '';
   recognition = new WebSTT();
   recognition.lang = 'en-US';
   recognition.continuous = true;   // stay on until user taps stop
   recognition.interimResults = true;
+
+  // 1. Preserve transcript history from earlier instances if the engine auto-restarts.
+  const sessionHistory = finalTranscript;
 
   recognition.onstart = () => {
     console.log('[STT] started');
@@ -140,15 +237,21 @@ function _startWebSTT() {
   };
 
   recognition.onresult = (event) => {
+    let currentSessionFinal = '';
     let interim = '';
-    for (let i = event.resultIndex; i < event.results.length; i++) {
+
+    // 2. Always iterate from 0 instead of event.resultIndex to avoid the Android replay bug.
+    for (let i = 0; i < event.results.length; i++) {
       if (event.results[i].isFinal) {
-        finalTranscript += event.results[i][0].transcript;
-        console.log('[STT] final chunk:', event.results[i][0].transcript);
+        currentSessionFinal += event.results[i][0].transcript;
       } else {
         interim += event.results[i][0].transcript;
       }
     }
+
+    // 3. Rebuild finalTranscript from prior history plus this session's final results.
+    finalTranscript = sessionHistory + currentSessionFinal;
+
     console.log('[STT] transcript so far — final:', finalTranscript, '| interim:', interim);
     showLiveQuery(finalTranscript + interim);
   };
@@ -169,12 +272,11 @@ function _startWebSTT() {
     }
   };
 
-  // Browser may stop recognition internally — restart if user hasn't tapped stop
   recognition.onend = () => {
     console.log('[STT] onend fired — isRecording:', state.isRecording);
     if (state.isRecording) {
-      console.log('[STT] restarting recognition…');
-      try { recognition.start(); } catch (e) { console.warn('[STT] restart failed:', e.message); }
+      console.log('[STT] restarting with fresh instance to avoid result-replay bug…');
+      _startWebSTT(); 
     }
   };
 
@@ -189,11 +291,14 @@ function _startWebSTT() {
 function stopRecording() {
   console.log('[MIC] stopRecording called — finalTranscript:', finalTranscript);
   if (!state.isRecording) return;
-  state.isRecording = false; // set before stop so onend doesn't restart
+  state.isRecording = false; 
 
+  // Keep shutdown order consistent: native first, web second.
   if (CapacitorSTT) {
     CapacitorSTT.stop().catch(() => {});
-    CapacitorSTT.removeAllListeners();
+    // Depending on the plugin, removeAllListeners can clear a pending event.
+    // Prefer removing only the specific STT listener when needed.
+    CapacitorSTT.removeAllListeners(); 
   } else if (recognition) {
     recognition.stop();
     recognition = null;
@@ -204,8 +309,6 @@ function stopRecording() {
 
   const transcript = finalTranscript.trim();
   finalTranscript = '';
-
-  console.log('[MIC] transcript to send:', transcript || '(empty)');
 
   if (transcript) {
     hideLiveQuery();
@@ -228,6 +331,16 @@ function setRecordingState(isRecording) {
   }
 }
 
+// ─── UI helpers ──────────────────────────────────────────────────────────────
+
+function setMicDisabled(disabled) {
+  if (disabled) {
+    ui.btnMic.classList.add('disabled');
+  } else {
+    ui.btnMic.classList.remove('disabled');
+  }
+}
+
 // ─── STT → API pipeline ───────────────────────────────────────────────────────
 
 async function handleTranscript(query) {
@@ -238,7 +351,7 @@ async function handleTranscript(query) {
   }
 
   state.isProcessing = true;
-  ui.btnMic.classList.add('disabled');
+  setMicDisabled(true);
 
   showLiveQuery(query);
   appendUserMessage(query);
@@ -271,7 +384,7 @@ async function handleTranscript(query) {
   }
 
   state.isProcessing = false;
-  ui.btnMic.classList.remove('disabled');
+  setMicDisabled(false);
 }
 
 // ─── Page navigation ──────────────────────────────────────────────────────────
@@ -314,8 +427,7 @@ async function runLoading() {
     try {
       conversationId = await window.chikkuAPI.createConversation();
     } catch (err) {
-      showLoadingError('Failed to create a session.\nCheck API connection.');
-      return;
+      conversationId = null;
     }
     if (!conversationId) {
       showLoadingError('Failed to create a session.\nCheck API connection.');
@@ -328,7 +440,7 @@ async function runLoading() {
   state.messageCount   = session?.message_count || 0;
 
   setLoadingStatus('Checking microphone…');
-  await requestMicPermission();
+  await requestMicWithTimeout(3000);
 
   setLoadingStatus('Ready!');
   await delay(300);
@@ -473,7 +585,7 @@ ui.btnMic.addEventListener('click', async () => {
 ui.btnNewChat.addEventListener('click', async () => {
   if (state.isRecording) stopRecording();
   state.isProcessing = true;
-  ui.btnMic.classList.add('disabled');
+  setMicDisabled(true);
   setStatus('thinking', 'Creating new conversation…');
 
   try {
@@ -495,7 +607,7 @@ ui.btnNewChat.addEventListener('click', async () => {
   }
 
   state.isProcessing = false;
-  ui.btnMic.classList.remove('disabled');
+  setMicDisabled(false);
 });
 
 ui.btnSend.addEventListener('click', sendTextInput);

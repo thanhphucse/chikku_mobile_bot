@@ -3,7 +3,7 @@
   "appName": "Chikku",
   "webDir": "www",
   "server": {
-    "androidScheme": "https"
+    "androidScheme": "http"
   },
   "plugins": {
     "SpeechRecognition": {
